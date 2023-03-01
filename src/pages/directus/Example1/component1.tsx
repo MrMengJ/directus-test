@@ -1,31 +1,14 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Button, Spin, Tree, TreeSelect } from "antd";
 import { Directus, Filter, IAuth, TypeMap } from "@directus/sdk";
 import { useAsyncEffect, useMemoizedFn } from "ahooks";
-import { arrayToTree } from "@/pages/directus/Example1/helper";
 import styled from "styled-components";
-import {
-  countBy,
-  filter,
-  find,
-  forEach,
-  isEmpty,
-  isNull,
-  map,
-  mapValues,
-  uniqBy,
-} from "lodash";
+import { filter, forEach, groupBy, isEmpty, isNull, map, uniq } from "lodash";
 import dayjs from "dayjs";
 import dynamic from "next/dynamic";
-import { ColumnConfig } from "@ant-design/plots/es/components/column";
-import { DualAxesConfig } from "@ant-design/plots/es/components/dual-axes";
-import { LineConfig } from "@ant-design/plots";
+import { ColumnConfig, PlotEvent } from "@ant-design/plots";
+
+import { arrayToTree } from "@/pages/directus/Example1/helper";
 
 const Column = dynamic(
   () => import("@ant-design/plots").then(({ Column }) => Column),
@@ -97,21 +80,6 @@ type MyCollections = {
   jecn_flow_org: IFlowOrg;
 };
 
-const PubTimeMapLabel = {
-  1: "1月",
-  2: "2月",
-  3: "3月",
-  4: "4月",
-  5: "5月",
-  6: "6月",
-  7: "7月",
-  8: "8月",
-  9: "9月",
-  10: "10月",
-  11: "11月",
-  12: "12月",
-};
-
 const ReleaseStatusMapLabel = {
   0: "新增",
   1: "修订",
@@ -123,7 +91,7 @@ function Example1() {
   const [isLoginSuccess, setIsLoginSuccess] = useState(false);
   const [allFlows, setAllFlows] = useState<IFlowStructure[] | null>(null);
   const [allOrgs, setAllOrgs] = useState<IFlowOrg[] | null>(null);
-  const [includeSubFlows, setIncludeSubFlows] = useState(false);
+  const [includeSubFlows, setIncludeSubFlows] = useState(true);
   const [includeSubOrgs, setIncludeSubOrgs] = useState(true);
   const [selectedArchitectureIds, setSelectedArchitectureIds] = useState<
     string[]
@@ -167,8 +135,9 @@ function Example1() {
   }, []);
 
   const getPubTimeLabel = (pubTime: Date) => {
+    const year = dayjs(pubTime).year();
     const month = dayjs(pubTime).month() + 1;
-    return PubTimeMapLabel[month];
+    return `${year}年${month}月`;
   };
 
   const handleFlowTreeChange = (newValue: { value: string }[]) => {
@@ -278,15 +247,13 @@ function Example1() {
     const startPaths = isEmpty(selectedArchitectures)
       ? Object.keys(statisticalFlowsByPath)
       : selectedArchitectures.map((item) => item.T_PATH);
-    const shouldSearchSubFlows =
-      includeSubFlows || isEmpty(selectedArchitectures);
 
     const result: Filter<IFlowStructureH> = {
       _and: [
         {
           _or: startPaths.map((path) => {
             return {
-              T_PATH: shouldSearchSubFlows
+              T_PATH: includeSubFlows
                 ? {
                     _starts_with: path,
                   }
@@ -327,24 +294,62 @@ function Example1() {
       const FlowOrg = directus.items("jecn_flow_org");
 
       if (isEmpty(selectedOrgIds)) {
-        const result = await FlowStructureH.readByQuery({
+        const flowsReponse = await FlowStructureH.readByQuery({
           limit: -1,
           sort: ["SORT_ID"],
           filter: getFetchFlowsFilterQuery(null),
         });
-        setSearchedFlows(result.data as IFlowStructureH[]);
+        const searchedFlows = flowsReponse.data as (IFlowStructureH & {
+          org?: IFlowOrg;
+        })[];
+        const relatedOrgIds = uniq(searchedFlows?.map((item) => item.ORG_ID));
+        const orgsResponse = await FlowOrg.readByQuery({
+          limit: -1,
+          sort: ["SORT_ID"],
+          filter: {
+            ORG_ID: {
+              _in: relatedOrgIds,
+            },
+          },
+        });
+        const searchedOrgs = orgsResponse.data as IFlowOrg[];
+        for (let i = 0, length = searchedFlows.length; i < length; i++) {
+          const flow = searchedFlows[i];
+          for (let j = 0, length = searchedOrgs.length; j < length; j++) {
+            const org = searchedOrgs[j];
+            if (flow.ORG_ID === org.ORG_ID) {
+              flow.org = org;
+            }
+          }
+        }
+
+        setSearchedFlows(searchedFlows);
       } else {
-        const orgs = await FlowOrg.readByQuery({
+        const orgsResponse = await FlowOrg.readByQuery({
           limit: -1,
           sort: ["SORT_ID"],
           filter: getFetchOrgsFilterQuery(),
         });
-        const result = await FlowStructureH.readByQuery({
+        const flowsResponse = await FlowStructureH.readByQuery({
           limit: -1,
           sort: ["SORT_ID"],
-          filter: getFetchFlowsFilterQuery(orgs.data as IFlowOrg[]),
+          filter: getFetchFlowsFilterQuery(orgsResponse.data as IFlowOrg[]),
         });
-        setSearchedFlows(result.data as IFlowStructureH[]);
+        const searchedFlows = flowsResponse.data as (IFlowStructureH & {
+          org?: IFlowOrg;
+        })[];
+        const searchedOrgs = orgsResponse.data as IFlowOrg[];
+        for (let i = 0, length = searchedFlows.length; i < length; i++) {
+          const flow = searchedFlows[i];
+          for (let j = 0, length = searchedOrgs.length; j < length; j++) {
+            const org = searchedOrgs[j];
+            if (flow.ORG_ID === org.ORG_ID) {
+              flow.org = org;
+            }
+          }
+        }
+
+        setSearchedFlows(searchedFlows);
       }
     }
   };
@@ -357,34 +362,6 @@ function Example1() {
     console.log("orgPubDetails", orgPubDetails);
     console.log("dualAxes2LineData", dualAxes2LineData);
   };
-
-  const flowItemsByPubTime: IKeyValue<IFlowStructureH[]> = useMemo(() => {
-    if (!searchedFlows) {
-      return {};
-    }
-
-    const result: IKeyValue<IFlowStructureH[]> = {
-      1: [],
-      2: [],
-      3: [],
-      4: [],
-      5: [],
-      6: [],
-      7: [],
-      8: [],
-      9: [],
-      10: [],
-      11: [],
-      12: [],
-    };
-    for (let i = 0; i < searchedFlows.length; i++) {
-      const item = searchedFlows[i];
-      const pubTime = item.PUB_TIME;
-      const month = dayjs(pubTime).month() + 1;
-      result[month].push(item);
-    }
-    return result;
-  }, [searchedFlows]);
 
   const statisticalFlowsByPath = useMemo(() => {
     if (isNull(allFlows)) {
@@ -438,173 +415,199 @@ function Example1() {
     return result;
   }, [allOrgs, selectedOrgIds]);
 
-  const temp = () => {};
-
   const column1Data = useMemo(() => {
     if (!searchedFlows) {
       return [];
     }
 
-    const statisticalFlows = Object.values(statisticalFlowsByPath);
-    const result = map(statisticalFlows, (item) => {
-      const { FLOW_ID, FLOW_NAME, PUB_TIME, T_PATH } = item;
+    const statisticalFlows = map(statisticalFlowsByPath, (item, path) => {
+      const { FLOW_ID, FLOW_NAME } = item;
       return {
         flowId: FLOW_ID,
         flowName: FLOW_NAME,
         flows: [],
-        path: T_PATH,
+        path: path,
+      } as {
+        flowId: number;
+        flowName: string;
+        flows: (IFlowStructureH & { pubTimeLabel: string })[];
+        path: string;
       };
     });
-
     for (let i = 0, length = searchedFlows.length; i < length; i++) {
       const flow = searchedFlows[i];
-      for (let j = 0, length = result.length; j < length; j++) {
-        if (flow.T_PATH.startsWith(result[j].path)) {
-          result[j].flows.push(flow);
+      for (let j = 0, length = statisticalFlows.length; j < length; j++) {
+        if (flow.T_PATH.startsWith(statisticalFlows[j].path)) {
+          const pubTimeLabel = getPubTimeLabel(flow.PUB_TIME);
+          statisticalFlows[j].flows.push({ ...flow, pubTimeLabel });
         }
       }
     }
 
-    const result3 = [];
-    for (let i = 0, length = result.length; i < length; i++) {
-      const item = result[i];
+    const result = [];
+    for (let i = 0, length = statisticalFlows.length; i < length; i++) {
+      const item = statisticalFlows[i];
       const { flows } = item;
       if (isEmpty(flows)) {
-        result3.push({
-          ...item,
+        result.push({
+          flowId: item.flowId,
+          ancestorFlowId: item.flowId,
           ancestorFlowName: item.flowName,
+          pubCount: 0,
         });
       } else {
-        const temp = countBy(flows, "FLOW_ID");
-        forEach(temp, (count, flowId) => {
-          const matchedFlow = find(flows, (item) => item.FLOW_ID == flowId);
-          if (matchedFlow) {
-            const { FLOW_ID, FLOW_NAME, PUB_TIME, release_status } =
-              matchedFlow;
-            result3.push({
-              flowId: FLOW_ID,
-              flowName: FLOW_NAME,
-              ancestorFlowName: item.flowName,
-              pubTime: PUB_TIME,
-              pubTimeLabel: getPubTimeLabel(PUB_TIME),
-              releaseStatus: release_status,
-              releaseStatusLabel: ReleaseStatusMapLabel[release_status],
-              pubCount: count,
-            });
-          }
+        forEach(groupBy(flows, "FLOW_ID"), (flows, flowId) => {
+          forEach(groupBy(flows, "pubTimeLabel"), (flows, pubTimeLabel) => {
+            forEach(
+              groupBy(flows, "release_status"),
+              (flows, releaseStatus) => {
+                result.push({
+                  flowId: flowId,
+                  ancestorFlowId: item.flowId,
+                  ancestorFlowName: item.flowName,
+                  pubTimeLabel: pubTimeLabel,
+                  releaseStatus: releaseStatus,
+                  releaseStatusLabel: ReleaseStatusMapLabel[releaseStatus],
+                  pubCount: flows.length,
+                });
+              }
+            );
+          });
         });
       }
     }
 
-    console.log("result", result);
-    console.log("result3", result3);
-
-    return result3;
-    // return result;
+    return result;
   }, [searchedFlows]);
 
   const column2Data = useMemo(() => {
-    const result: {
-      pubTime: Date;
-      pubTimeMonth: string;
-      pubTimeLabel: string;
-      orgId: string;
-      orgName: string;
-      pubCount: number;
-      releaseStatus: number;
-      releaseStatusLabel: string;
-    }[] = [];
-    forEach(flowItemsByPubTime, (flows, key) => {
-      forEach(countBy(flows, "ORG_ID"), (count, orgId) => {
-        const matchedFlow = find(flows, (item) => item.ORG_ID == orgId);
-        if (matchedFlow) {
-          result.push({
-            pubTime: matchedFlow.PUB_TIME,
-            pubTimeMonth: key,
-            pubTimeLabel: PubTimeMapLabel[key],
-            orgId: orgId,
-            orgName: matchedFlow.ORG_NAME,
-            pubCount: count,
-            releaseStatus: matchedFlow.release_status,
-            releaseStatusLabel:
-              ReleaseStatusMapLabel[matchedFlow.release_status],
-          });
+    if (!searchedFlows) {
+      return [];
+    }
+
+    const statisticalOrgs = map(statisticalOrgsByPath, (item, path) => {
+      const { ORG_ID, ORG_NAME } = item;
+      return {
+        orgId: ORG_ID,
+        orgName: ORG_NAME,
+        flows: [],
+        path: path,
+      } as {
+        orgId: number;
+        orgName: string;
+        flows: (IFlowStructureH & { pubTimeLabel: string })[];
+        path: string;
+      };
+    });
+    forEach(groupBy(searchedFlows, "org.T_PATH"), (groupItem, path) => {
+      for (let j = 0, length = statisticalOrgs.length; j < length; j++) {
+        if (path.startsWith(statisticalOrgs[j].path)) {
+          statisticalOrgs[j].flows.push(
+            ...map(groupItem, (item) => ({
+              ...item,
+              pubTimeLabel: getPubTimeLabel(item.PUB_TIME),
+            }))
+          );
         }
-      });
+      }
     });
 
+    const result = [];
+    for (let i = 0, length = statisticalOrgs.length; i < length; i++) {
+      const item = statisticalOrgs[i];
+      const { flows } = item;
+      if (isEmpty(flows)) {
+        result.push({
+          orgId: item.orgId,
+          orgName: item.orgName,
+          pubCount: 0,
+        });
+      } else {
+        forEach(groupBy(flows, "FLOW_ID"), (flows, flowId) => {
+          forEach(groupBy(flows, "pubTimeLabel"), (flows, pubTimeLabel) => {
+            forEach(
+              groupBy(flows, "release_status"),
+              (flows, releaseStatus) => {
+                result.push({
+                  flowId: flowId,
+                  orgId: item.orgId,
+                  orgName: item.orgName,
+                  pubTimeLabel: pubTimeLabel,
+                  releaseStatus: releaseStatus,
+                  releaseStatusLabel: ReleaseStatusMapLabel[releaseStatus],
+                  pubCount: flows.length,
+                });
+              }
+            );
+          });
+        });
+      }
+    }
+
     return result;
-  }, [flowItemsByPubTime]);
+  }, [searchedFlows]);
 
   const onColumn1Ready: ColumnConfig["onReady"] = useMemoizedFn((plot) => {
-    plot.on("interval:click", (evt: MouseEvent) => {
-      const { x, y } = evt;
-      const tooltipData = plot.chart.getTooltipItems({ x, y });
+    plot.on("element:click", (evt: PlotEvent) => {
+      const { x, y, view } = evt;
+      const tooltipData = view.getTooltipItems({ x, y });
       setFlowPubDetails(tooltipData.map((item) => item.data));
     });
   });
 
   const onColumn2Ready: ColumnConfig["onReady"] = useMemoizedFn((plot) => {
-    plot.on("interval:click", (evt: MouseEvent) => {
-      const { x, y } = evt;
-      const tooltipData = plot.chart.getTooltipItems({ x, y });
+    plot.on("element:click", (evt: PlotEvent) => {
+      const { x, y, view } = evt;
+      const tooltipData = view.getTooltipItems({ x, y });
       setOrgPubDetails(tooltipData.map((item) => item.data));
     });
   });
 
   const dualAxes1LineData = useMemo(() => {
-    const result: IKeyValue<IKeyValue[]> = {};
-    for (let i = 0; i < flowPubDetails.length; i++) {
-      const item = flowPubDetails[i];
-      const pubTimeMonth = item.pubTimeMonth;
-      if (!result[pubTimeMonth]) {
-        result[pubTimeMonth] = [];
-      }
-      result[pubTimeMonth].push(item);
-    }
-
-    const result2: IKeyValue[] = [];
-    forEach(result, (item, key) => {
+    const result: { pubTimeLabel: string; pubCount: number }[] = [];
+    forEach(groupBy(flowPubDetails, "pubTimeLabel"), (item, key) => {
       let count = 0;
       forEach(item, (item) => {
         count += item.pubCount;
       });
-      result2.push({
-        pubTime: item[0]?.pubTime,
-        pubTimeLabel: PubTimeMapLabel[key],
+      result.push({
+        pubTimeLabel: key,
         pubCount: count,
       });
     });
 
-    return result2;
+    return result;
   }, [flowPubDetails]);
 
   const dualAxes2LineData = useMemo(() => {
-    const result: IKeyValue<IKeyValue[]> = {};
-    for (let i = 0; i < orgPubDetails.length; i++) {
-      const item = orgPubDetails[i];
-      const pubTimeMonth = item.pubTimeMonth;
-      if (!result[pubTimeMonth]) {
-        result[pubTimeMonth] = [];
-      }
-      result[pubTimeMonth].push(item);
-    }
-
-    const result2: IKeyValue[] = [];
-    forEach(result, (item, key) => {
+    const result: { pubTimeLabel: string; pubCount: number }[] = [];
+    forEach(groupBy(orgPubDetails, "pubTimeLabel"), (item, key) => {
       let count = 0;
       forEach(item, (item) => {
         count += item.pubCount;
       });
-      result2.push({
-        pubTime: item[0]?.pubTime,
-        pubTimeLabel: PubTimeMapLabel[key],
+      result.push({
+        pubTimeLabel: key,
         pubCount: count,
       });
     });
 
-    return result2;
+    return result;
   }, [orgPubDetails]);
+
+  const dualAxesLegend: ColumnConfig["legend"] = useMemo(() => {
+    return {
+      itemName: {
+        formatter: (text) => {
+          if (text === "pubCount") {
+            return "总计";
+          }
+
+          return text;
+        },
+      },
+    };
+  }, []);
 
   if (isEmpty(allFlows) || isEmpty(allOrgs)) {
     return <Spin />;
@@ -651,17 +654,24 @@ function Example1() {
           xField={"ancestorFlowName"}
           yField={"pubCount"}
           seriesField={"pubTimeLabel"}
-          width={800}
+          autoFit={true}
           label={{
             position: "middle", // 'top', 'bottom', 'middle'
           }}
+          xAxis={{
+            label: {
+              autoHide: true,
+            },
+          }}
           onReady={onColumn1Ready}
-          style={{ marginRight: "20px" }}
+          style={{ marginRight: "20px", flex: 1 }}
         />
         <DualAxes
           data={[flowPubDetails, dualAxes1LineData]}
           xField={"pubTimeLabel"}
           yField={["pubCount", "pubCount"]}
+          legend={dualAxesLegend}
+          autoFit={true}
           geometryOptions={[
             {
               geometry: "column",
@@ -679,7 +689,7 @@ function Example1() {
               },
             },
           ]}
-          width={800}
+          style={{ flex: 1 }}
         />
       </ChartWrapper>
       <ChartWrapper>
@@ -689,35 +699,37 @@ function Example1() {
           xField={"orgName"}
           yField={"pubCount"}
           seriesField={"pubTimeLabel"}
-          width={800}
           label={{
             position: "middle", // 'top', 'bottom', 'middle'
           }}
+          autoFit={true}
           onReady={onColumn2Ready}
-          style={{ marginRight: "20px" }}
+          style={{ marginRight: "20px", flex: 1 }}
         />
         <DualAxes
           data={[orgPubDetails, dualAxes2LineData]}
           xField={"pubTimeLabel"}
           yField={["pubCount", "pubCount"]}
+          legend={dualAxesLegend}
+          autoFit={true}
           geometryOptions={[
             {
               geometry: "column",
               isStack: true,
               seriesField: "releaseStatusLabel",
-              label: {
-                position: "middle", // 'top', 'bottom', 'middle'
-              },
+              // label: {
+              //   position: "middle", // 'top', 'bottom', 'middle'
+              // },
             },
             {
               geometry: "line",
               isStack: true,
-              label: {
-                position: "middle", // 'top', 'bottom', 'middle'
-              },
+              // label: {
+              //   position: "middle", // 'top', 'bottom', 'middle'
+              // },
             },
           ]}
-          width={800}
+          style={{ flex: 1 }}
         />
       </ChartWrapper>
     </Wrapper>
