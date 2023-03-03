@@ -1,9 +1,9 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { Button, Spin, Tree, TreeSelect } from "antd";
-import { Directus, Filter, IAuth, TypeMap } from "@directus/sdk";
+import { Button, Spin, TreeSelect } from "antd";
+import { Directus, Filter, IAuth } from "@directus/sdk";
 import { useAsyncEffect, useMemoizedFn } from "ahooks";
 import styled from "styled-components";
-import { filter, forEach, groupBy, isEmpty, isNull, map, uniq } from "lodash";
+import { filter, forEach, isEmpty, isNull, isNumber, map, uniq } from "lodash";
 import dayjs from "dayjs";
 import dynamic from "next/dynamic";
 import { ColumnConfig, PlotEvent } from "@ant-design/plots";
@@ -16,10 +16,6 @@ const Column = dynamic(
 );
 const DualAxes = dynamic(
   () => import("@ant-design/plots").then(({ DualAxes }) => DualAxes),
-  { ssr: false }
-);
-const Line = dynamic(
-  () => import("@ant-design/plots").then(({ Line }) => Line),
   { ssr: false }
 );
 
@@ -60,7 +56,7 @@ type IFlowStructure = {
   PRE_FLOW_ID: number;
   FLOW_ID: number;
   FLOW_NAME: string;
-  IS_FLOW: number;
+  ISFLOW: number;
   SORT_ID: number;
   T_PATH: string;
   ORG_ID: number;
@@ -80,6 +76,37 @@ type MyCollections = {
   jecn_flow_org: IFlowOrg;
 };
 
+type ITimeRange = {
+  startTime: string;
+  endTime: string;
+};
+
+type IFlowColumn = {
+  flowId: number;
+  flowName: string;
+  pubTimeLabel: string;
+  addCount: number;
+  reviseCount: number;
+  abolishCount: number;
+  totalCount: number;
+};
+
+type IOrgColumn = {
+  orgId: number;
+  orgName: string;
+  pubTimeLabel: string;
+  addCount: number;
+  reviseCount: number;
+  abolishCount: number;
+  totalCount: number;
+};
+
+const ReleaseStatus = {
+  add: 0,
+  revise: 1,
+  abolish: 2,
+};
+
 const ReleaseStatusMapLabel = {
   0: "新增",
   1: "修订",
@@ -91,15 +118,24 @@ function Example1() {
   const [isLoginSuccess, setIsLoginSuccess] = useState(false);
   const [allFlows, setAllFlows] = useState<IFlowStructure[] | null>(null);
   const [allOrgs, setAllOrgs] = useState<IFlowOrg[] | null>(null);
-  const [includeSubFlows, setIncludeSubFlows] = useState(true);
-  const [includeSubOrgs, setIncludeSubOrgs] = useState(true);
   const [selectedArchitectureIds, setSelectedArchitectureIds] = useState<
     string[]
   >([]);
   const [selectedOrgIds, setSelectedOrgIds] = useState<string[]>([]);
-  const [searchedFlows, setSearchedFlows] = useState<IFlowStructureH[] | null>(
-    null
-  );
+  const [timeRange, setTimeRange] = useState<ITimeRange>({
+    startTime: new Date(
+      dayjs().subtract(11, "month").format("YYYY-MM")
+    ).toISOString(),
+    endTime: new Date().toISOString(),
+  }); // 搜索条件中的发布时段
+  const [releaseStatus, setReleaseStatus] = useState<number | null>(null); // 搜索条件中的版本类型
+  const [confidentialityLevel, setConfidentialityLevel] = useState<
+    number | null
+  >(null); // 搜索条件中的保密级别
+
+  const [searchedFlows, setSearchedFlows] = useState<
+    (IFlowStructureH & { org?: IFlowOrg })[] | null
+  >(null);
   const [flowPubDetails, setFlowPubDetails] = useState<IKeyValue[]>([]);
   const [orgPubDetails, setOrgPubDetails] = useState<IKeyValue[]>([]);
 
@@ -134,7 +170,7 @@ function Example1() {
     }
   }, []);
 
-  const getPubTimeLabel = (pubTime: Date) => {
+  const getPubTimeLabel = (pubTime: Date | string) => {
     const year = dayjs(pubTime).year();
     const month = dayjs(pubTime).month() + 1;
     return `${year}年${month}月`;
@@ -188,33 +224,6 @@ function Example1() {
     });
   }, [allOrgs]);
 
-  /**
-   * 获取选中的架构有效path字段数据集合
-   * @param selectedFlows
-   * @return paths[]
-   */
-  const getValidStartPaths = (selectedFlows: IFlowStructure[] | IFlowOrg[]) => {
-    const result: IFlowStructure["T_PATH"][] = [];
-    for (let i = 0; i < selectedFlows.length; i++) {
-      const thePath = selectedFlows[i].T_PATH;
-      let isValid = true;
-      for (let j = 0; i < result.length; j++) {
-        if (thePath.startsWith(result[j])) {
-          isValid = false;
-          break;
-        } else if (result[j].startsWith(thePath)) {
-          result.splice(j, 1);
-          break;
-        }
-      }
-      if (isValid) {
-        result.push(thePath);
-      }
-    }
-
-    return result;
-  };
-
   const getFetchOrgsFilterQuery = (): Filter<IFlowOrg> => {
     const selectedOrgs = filter(allOrgs, (item) =>
       selectedArchitectureIds.includes(item.ORG_ID.toString())
@@ -226,13 +235,9 @@ function Example1() {
     return {
       _or: startPaths.map((path) => {
         return {
-          T_PATH: includeSubOrgs
-            ? {
-                _starts_with: path,
-              }
-            : {
-                _eq: path,
-              },
+          T_PATH: {
+            _starts_with: path,
+          },
         };
       }),
     };
@@ -253,35 +258,72 @@ function Example1() {
         {
           _or: startPaths.map((path) => {
             return {
-              T_PATH: includeSubFlows
-                ? {
-                    _starts_with: path,
-                  }
-                : {
-                    _eq: path,
-                  },
+              T_PATH: {
+                _starts_with: path,
+              },
             };
           }),
         },
-        // {
-        //   PUB_TIME: {
-        //     _gte: new Date("2022-12-13T12:00:00"),
-        //   },
-        // },
-        // {
-        //   CONFIDENTIALITY_LEVEL: {
-        //     _eq: 1,
-        //   },
-        // },
+        {
+          ISFLOW: {
+            _eq: 1,
+          },
+        },
+        {
+          _and: [
+            {
+              PUB_TIME: {
+                _gte: new Date(timeRange.startTime),
+              },
+            },
+            {
+              PUB_TIME: {
+                _lte: new Date(timeRange.endTime),
+              },
+            },
+          ],
+        },
       ],
     };
 
+    // 责任部门
     if (!isNull(orgs)) {
       result._and.unshift({
         ORG_ID: {
           _in: orgs.map((org) => org.ORG_ID),
         },
       });
+    }
+
+    // 版本类型
+    if (isNumber(releaseStatus)) {
+      result._and.unshift({
+        release_status: {
+          _eq: releaseStatus,
+        },
+      });
+    }
+
+    // 保密级别
+    if (isNumber(confidentialityLevel)) {
+      result._and.unshift({
+        CONFIDENTIALITY_LEVEL: {
+          _eq: confidentialityLevel,
+        },
+      });
+    }
+
+    return result;
+  };
+
+  const getFetchRelatedOrgsFilterQuery = (
+    orgIds: IFlowOrg["ORG_ID"][]
+  ): Filter<IFlowOrg> => {
+    const result: Filter<IFlowOrg> = {};
+    if (!isEmpty(orgIds)) {
+      result["ORG_ID"] = {
+        _in: orgIds,
+      };
     }
 
     return result;
@@ -306,11 +348,7 @@ function Example1() {
         const orgsResponse = await FlowOrg.readByQuery({
           limit: -1,
           sort: ["SORT_ID"],
-          filter: {
-            ORG_ID: {
-              _in: relatedOrgIds,
-            },
-          },
+          filter: getFetchRelatedOrgsFilterQuery(relatedOrgIds),
         });
         const searchedOrgs = orgsResponse.data as IFlowOrg[];
         for (let i = 0, length = searchedFlows.length; i < length; i++) {
@@ -355,12 +393,10 @@ function Example1() {
   };
 
   const handleDownload = () => {
-    console.log("column1Data", column1Data);
+    console.log("flowColumnData", flowColumnData);
     console.log("column2Data", column2Data);
     console.log("flowPubDetails", flowPubDetails);
-    console.log("dualAxes1LineData", dualAxes1LineData);
     console.log("orgPubDetails", orgPubDetails);
-    console.log("dualAxes2LineData", dualAxes2LineData);
   };
 
   const statisticalFlowsByPath = useMemo(() => {
@@ -415,7 +451,30 @@ function Example1() {
     return result;
   }, [allOrgs, selectedOrgIds]);
 
-  const column1Data = useMemo(() => {
+  const pubTimeLabelList = useMemo(() => {
+    let startTime = dayjs(timeRange.startTime);
+    const endTime = dayjs(timeRange.endTime);
+    const timeList: string[] = [timeRange.startTime];
+    while (startTime.isBefore(endTime)) {
+      startTime = startTime.add(1, "month");
+      if (startTime.isBefore(endTime)) {
+        timeList.push(startTime.toISOString());
+      }
+    }
+
+    return timeList.map((item) => getPubTimeLabel(item));
+  }, [timeRange]);
+
+  const getFlowsByPubTime = () => {
+    const result: IKeyValue<IFlowStructureH[]> = {};
+    for (let i = 0, length = pubTimeLabelList.length; i < length; i++) {
+      result[pubTimeLabelList[i]] = [];
+    }
+
+    return result;
+  };
+
+  const flowColumnData = useMemo(() => {
     if (!searchedFlows) {
       return [];
     }
@@ -425,12 +484,12 @@ function Example1() {
       return {
         flowId: FLOW_ID,
         flowName: FLOW_NAME,
-        flows: [],
+        flowsByPubTime: getFlowsByPubTime(),
         path: path,
       } as {
         flowId: number;
         flowName: string;
-        flows: (IFlowStructureH & { pubTimeLabel: string })[];
+        flowsByPubTime: IKeyValue<IFlowStructureH[]>;
         path: string;
       };
     });
@@ -439,42 +498,59 @@ function Example1() {
       for (let j = 0, length = statisticalFlows.length; j < length; j++) {
         if (flow.T_PATH.startsWith(statisticalFlows[j].path)) {
           const pubTimeLabel = getPubTimeLabel(flow.PUB_TIME);
-          statisticalFlows[j].flows.push({ ...flow, pubTimeLabel });
+          const flowsByPubTime = statisticalFlows[j]["flowsByPubTime"];
+          if (!flowsByPubTime[pubTimeLabel]) {
+            flowsByPubTime[pubTimeLabel] = [];
+          }
+          flowsByPubTime[pubTimeLabel].push(flow);
         }
       }
     }
 
-    const result = [];
+    const result: IFlowColumn[] = [];
     for (let i = 0, length = statisticalFlows.length; i < length; i++) {
       const item = statisticalFlows[i];
-      const { flows } = item;
-      if (isEmpty(flows)) {
-        result.push({
-          flowId: item.flowId,
-          ancestorFlowId: item.flowId,
-          ancestorFlowName: item.flowName,
-          pubCount: 0,
-        });
-      } else {
-        forEach(groupBy(flows, "FLOW_ID"), (flows, flowId) => {
-          forEach(groupBy(flows, "pubTimeLabel"), (flows, pubTimeLabel) => {
-            forEach(
-              groupBy(flows, "release_status"),
-              (flows, releaseStatus) => {
-                result.push({
-                  flowId: flowId,
-                  ancestorFlowId: item.flowId,
-                  ancestorFlowName: item.flowName,
-                  pubTimeLabel: pubTimeLabel,
-                  releaseStatus: releaseStatus,
-                  releaseStatusLabel: ReleaseStatusMapLabel[releaseStatus],
-                  pubCount: flows.length,
-                });
-              }
-            );
+      const { flowId, flowName, flowsByPubTime } = item;
+      forEach(flowsByPubTime, (flows, pubTimeLabel) => {
+        if (isEmpty(flows)) {
+          result.push({
+            flowId,
+            flowName,
+            pubTimeLabel,
+            addCount: 0,
+            reviseCount: 0,
+            abolishCount: 0,
+            totalCount: 0,
           });
-        });
-      }
+        } else {
+          let addCount = 0,
+            reviseCount = 0,
+            abolishCount = 0;
+          for (let j = 0, length = flows.length; j < length; j++) {
+            const flow = flows[j];
+            if (flow.release_status === ReleaseStatus.add) {
+              addCount++;
+            }
+
+            if (flow.release_status === ReleaseStatus.revise) {
+              reviseCount++;
+            }
+
+            if (flow.release_status === ReleaseStatus.abolish) {
+              abolishCount++;
+            }
+          }
+          result.push({
+            flowId,
+            flowName,
+            pubTimeLabel,
+            addCount,
+            reviseCount,
+            abolishCount,
+            totalCount: flows.length,
+          });
+        }
+      });
     }
 
     return result;
@@ -490,58 +566,73 @@ function Example1() {
       return {
         orgId: ORG_ID,
         orgName: ORG_NAME,
-        flows: [],
+        flowsByPubTime: getFlowsByPubTime(),
         path: path,
       } as {
         orgId: number;
         orgName: string;
-        flows: (IFlowStructureH & { pubTimeLabel: string })[];
+        flowsByPubTime: IKeyValue<IFlowStructureH[]>;
         path: string;
       };
     });
-    forEach(groupBy(searchedFlows, "org.T_PATH"), (groupItem, path) => {
+    for (let i = 0, length = searchedFlows.length; i < length; i++) {
+      const flow = searchedFlows[i];
       for (let j = 0, length = statisticalOrgs.length; j < length; j++) {
-        if (path.startsWith(statisticalOrgs[j].path)) {
-          statisticalOrgs[j].flows.push(
-            ...map(groupItem, (item) => ({
-              ...item,
-              pubTimeLabel: getPubTimeLabel(item.PUB_TIME),
-            }))
-          );
+        if (flow.org?.T_PATH.startsWith(statisticalOrgs[j].path)) {
+          const pubTimeLabel = getPubTimeLabel(flow.PUB_TIME);
+          const flowsByPubTime = statisticalOrgs[j]["flowsByPubTime"];
+          if (!flowsByPubTime[pubTimeLabel]) {
+            flowsByPubTime[pubTimeLabel] = [];
+          }
+          flowsByPubTime[pubTimeLabel].push(flow);
         }
       }
-    });
+    }
 
-    const result = [];
+    const result: IOrgColumn[] = [];
     for (let i = 0, length = statisticalOrgs.length; i < length; i++) {
       const item = statisticalOrgs[i];
-      const { flows } = item;
-      if (isEmpty(flows)) {
-        result.push({
-          orgId: item.orgId,
-          orgName: item.orgName,
-          pubCount: 0,
-        });
-      } else {
-        forEach(groupBy(flows, "FLOW_ID"), (flows, flowId) => {
-          forEach(groupBy(flows, "pubTimeLabel"), (flows, pubTimeLabel) => {
-            forEach(
-              groupBy(flows, "release_status"),
-              (flows, releaseStatus) => {
-                result.push({
-                  flowId: flowId,
-                  orgId: item.orgId,
-                  orgName: item.orgName,
-                  pubTimeLabel: pubTimeLabel,
-                  releaseStatus: releaseStatus,
-                  releaseStatusLabel: ReleaseStatusMapLabel[releaseStatus],
-                  pubCount: flows.length,
-                });
-              }
-            );
+      const { orgId, orgName, flowsByPubTime } = item;
+      forEach(flowsByPubTime, (flows, pubTimeLabel) => {
+        if (isEmpty(flows)) {
+          result.push({
+            orgId,
+            orgName,
+            pubTimeLabel,
+            addCount: 0,
+            reviseCount: 0,
+            abolishCount: 0,
+            totalCount: 0,
           });
-        });
-      }
+        } else {
+          let addCount = 0,
+            reviseCount = 0,
+            abolishCount = 0;
+          for (let j = 0, length = flows.length; j < length; j++) {
+            const flow = flows[j];
+            if (flow.release_status === ReleaseStatus.add) {
+              addCount++;
+            }
+
+            if (flow.release_status === ReleaseStatus.revise) {
+              reviseCount++;
+            }
+
+            if (flow.release_status === ReleaseStatus.abolish) {
+              abolishCount++;
+            }
+          }
+          result.push({
+            orgId,
+            orgName,
+            pubTimeLabel,
+            addCount,
+            reviseCount,
+            abolishCount,
+            totalCount: flows.length,
+          });
+        }
+      });
     }
 
     return result;
@@ -563,34 +654,84 @@ function Example1() {
     });
   });
 
-  const dualAxes1LineData = useMemo(() => {
-    const result: { pubTimeLabel: string; pubCount: number }[] = [];
-    forEach(groupBy(flowPubDetails, "pubTimeLabel"), (item, key) => {
-      let count = 0;
-      forEach(item, (item) => {
-        count += item.pubCount;
-      });
+  const dualAxesFlowColumnData = useMemo(() => {
+    const result = [];
+
+    for (let i = 0, length = flowPubDetails.length; i < length; i++) {
+      const item = flowPubDetails[i];
+      const {
+        addCount,
+        reviseCount,
+        abolishCount,
+        flowId,
+        flowName,
+        pubTimeLabel,
+      } = item;
       result.push({
-        pubTimeLabel: key,
-        pubCount: count,
+        flowId,
+        flowName,
+        pubTimeLabel,
+        pubCount: addCount,
+        releaseStatusLabel: ReleaseStatusMapLabel[ReleaseStatus.add],
       });
-    });
+
+      result.push({
+        flowId,
+        flowName,
+        pubTimeLabel,
+        pubCount: reviseCount,
+        releaseStatusLabel: ReleaseStatusMapLabel[ReleaseStatus.revise],
+      });
+
+      result.push({
+        flowId,
+        flowName,
+        pubTimeLabel,
+        pubCount: abolishCount,
+        releaseStatusLabel: ReleaseStatusMapLabel[ReleaseStatus.abolish],
+      });
+    }
 
     return result;
   }, [flowPubDetails]);
 
-  const dualAxes2LineData = useMemo(() => {
-    const result: { pubTimeLabel: string; pubCount: number }[] = [];
-    forEach(groupBy(orgPubDetails, "pubTimeLabel"), (item, key) => {
-      let count = 0;
-      forEach(item, (item) => {
-        count += item.pubCount;
-      });
+  const dualAxesOrgColumnData = useMemo(() => {
+    const result = [];
+
+    for (let i = 0, length = orgPubDetails.length; i < length; i++) {
+      const item = orgPubDetails[i];
+      const {
+        addCount,
+        reviseCount,
+        abolishCount,
+        orgId,
+        orgName,
+        pubTimeLabel,
+      } = item;
       result.push({
-        pubTimeLabel: key,
-        pubCount: count,
+        orgId,
+        orgName,
+        pubTimeLabel,
+        pubCount: addCount,
+        releaseStatusLabel: ReleaseStatusMapLabel[ReleaseStatus.add],
       });
-    });
+
+      result.push({
+        orgId,
+        orgName,
+        pubTimeLabel,
+        pubCount: reviseCount,
+        releaseStatusLabel: ReleaseStatusMapLabel[ReleaseStatus.revise],
+      });
+
+      result.push({
+        orgId,
+        orgName,
+        pubTimeLabel,
+        pubCount: abolishCount,
+        releaseStatusLabel: ReleaseStatusMapLabel[ReleaseStatus.abolish],
+      });
+    }
 
     return result;
   }, [orgPubDetails]);
@@ -599,7 +740,7 @@ function Example1() {
     return {
       itemName: {
         formatter: (text) => {
-          if (text === "pubCount") {
+          if (text === "totalCount") {
             return "总计";
           }
 
@@ -649,10 +790,10 @@ function Example1() {
       </SearchWrapper>
       <ChartWrapper>
         <Column
-          data={column1Data}
+          data={flowColumnData}
           isStack={true}
-          xField={"ancestorFlowName"}
-          yField={"pubCount"}
+          xField={"flowName"}
+          yField={"totalCount"}
           seriesField={"pubTimeLabel"}
           autoFit={true}
           label={{
@@ -667,9 +808,9 @@ function Example1() {
           style={{ marginRight: "20px", flex: 1 }}
         />
         <DualAxes
-          data={[flowPubDetails, dualAxes1LineData]}
+          data={[dualAxesFlowColumnData, flowPubDetails]}
           xField={"pubTimeLabel"}
-          yField={["pubCount", "pubCount"]}
+          yField={["pubCount", "totalCount"]}
           legend={dualAxesLegend}
           autoFit={true}
           geometryOptions={[
@@ -697,7 +838,7 @@ function Example1() {
           data={column2Data}
           isStack={true}
           xField={"orgName"}
-          yField={"pubCount"}
+          yField={"totalCount"}
           seriesField={"pubTimeLabel"}
           label={{
             position: "middle", // 'top', 'bottom', 'middle'
@@ -707,9 +848,9 @@ function Example1() {
           style={{ marginRight: "20px", flex: 1 }}
         />
         <DualAxes
-          data={[orgPubDetails, dualAxes2LineData]}
+          data={[dualAxesOrgColumnData, orgPubDetails]}
           xField={"pubTimeLabel"}
-          yField={["pubCount", "pubCount"]}
+          yField={["pubCount", "totalCount"]}
           legend={dualAxesLegend}
           autoFit={true}
           geometryOptions={[

@@ -67,7 +67,7 @@ type IFlowStructure = {
   PRE_FLOW_ID: number;
   FLOW_ID: number;
   FLOW_NAME: string;
-  IS_FLOW: number;
+  ISFLOW: number;
   SORT_ID: number;
   T_PATH: string;
   ORG_ID: number;
