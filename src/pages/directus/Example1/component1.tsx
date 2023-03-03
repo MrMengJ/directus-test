@@ -42,7 +42,7 @@ type IKeyValue<T = any> = {
   [key: string]: T;
 };
 
-type IFlowOrg = {
+export type IFlowOrg = {
   GUID: string; // 主键
   PER_ORG_ID: number;
   ORG_ID: number;
@@ -113,6 +113,12 @@ const ReleaseStatusMapLabel = {
   2: "废止",
 };
 
+export const getPubTimeLabel = (pubTime: Date | string) => {
+  const year = dayjs(pubTime).year();
+  const month = dayjs(pubTime).month() + 1;
+  return `${year}.${month}`;
+};
+
 function Example1() {
   const directusRef = useRef<Directus<MyCollections, IAuth>>();
   const [isLoginSuccess, setIsLoginSuccess] = useState(false);
@@ -169,12 +175,6 @@ function Example1() {
       setAllOrgs(allOrgs.data || []);
     }
   }, []);
-
-  const getPubTimeLabel = (pubTime: Date | string) => {
-    const year = dayjs(pubTime).year();
-    const month = dayjs(pubTime).month() + 1;
-    return `${year}年${month}月`;
-  };
 
   const handleFlowTreeChange = (newValue: { value: string }[]) => {
     setSelectedArchitectureIds(newValue.map((item) => item.value));
