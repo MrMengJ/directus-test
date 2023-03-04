@@ -3,7 +3,7 @@ import { Button, Spin, TreeSelect } from "antd";
 import { Directus, Filter, IAuth } from "@directus/sdk";
 import { useAsyncEffect, useMemoizedFn } from "ahooks";
 import styled from "styled-components";
-import { filter, forEach, isEmpty, isNull, isNumber, map, uniq } from "lodash";
+import { find, forEach, isEmpty, isNull, isNumber, map, uniq } from "lodash";
 import dayjs from "dayjs";
 import dynamic from "next/dynamic";
 import { ColumnConfig, PlotEvent } from "@ant-design/plots";
@@ -38,7 +38,7 @@ const Box = styled.div`
   margin: 10px;
 `;
 
-type IKeyValue<T = any> = {
+export type IKeyValue<T = any> = {
   [key: string]: T;
 };
 
@@ -59,14 +59,14 @@ type IFlowStructure = {
   ISFLOW: number;
   SORT_ID: number;
   T_PATH: string;
-  ORG_ID: number;
-  ORG_NAME: string;
-  PUB_TIME: Date;
-  CONFIDENTIALITY_LEVEL: number;
+  ORG_ID: number | null;
+  ORG_NAME: string | null;
+  CONFIDENTIALITY_LEVEL: number | null;
 };
 
 type IFlowStructureH = IFlowStructure & {
   GUID: string; // 主键
+  PUB_TIME: string;
   release_status: number;
 };
 
@@ -76,7 +76,7 @@ type MyCollections = {
   jecn_flow_org: IFlowOrg;
 };
 
-type ITimeRange = {
+export type ITimeRange = {
   startTime: string;
   endTime: string;
 };
@@ -99,6 +99,13 @@ type IOrgColumn = {
   reviseCount: number;
   abolishCount: number;
   totalCount: number;
+};
+
+export const ROOT_NODE_ID = 0;
+
+const FlowType = {
+  architecture: 0,
+  process: 1,
 };
 
 const ReleaseStatus = {
@@ -124,10 +131,10 @@ function Example1() {
   const [isLoginSuccess, setIsLoginSuccess] = useState(false);
   const [allFlows, setAllFlows] = useState<IFlowStructure[] | null>(null);
   const [allOrgs, setAllOrgs] = useState<IFlowOrg[] | null>(null);
-  const [selectedArchitectureIds, setSelectedArchitectureIds] = useState<
-    string[]
+  const [selectedArchitectures, setSelectedArchitectures] = useState<
+    IFlowStructure[]
   >([]);
-  const [selectedOrgIds, setSelectedOrgIds] = useState<string[]>([]);
+  const [selectedOrgs, setSelectedOrgs] = useState<IFlowOrg[]>([]);
   const [timeRange, setTimeRange] = useState<ITimeRange>({
     startTime: new Date(
       dayjs().subtract(11, "month").format("YYYY-MM")
@@ -177,11 +184,17 @@ function Example1() {
   }, []);
 
   const handleFlowTreeChange = (newValue: { value: string }[]) => {
-    setSelectedArchitectureIds(newValue.map((item) => item.value));
+    const selectedArchitectures = allFlows!.filter((flow) =>
+      find(newValue, (item) => parseInt(item.value) === flow.FLOW_ID)
+    );
+    setSelectedArchitectures(selectedArchitectures);
   };
 
   const handleOrgTreeChange = (newValue: { value: string }[]) => {
-    setSelectedOrgIds(newValue.map((item) => item.value));
+    const selectedOrgs = allOrgs!.filter((org) =>
+      find(newValue, (item) => parseInt(item.value) === org.ORG_ID)
+    );
+    setSelectedOrgs(selectedOrgs);
   };
 
   const getFlowTreeData = useCallback(() => {
@@ -225,12 +238,7 @@ function Example1() {
   }, [allOrgs]);
 
   const getFetchOrgsFilterQuery = (): Filter<IFlowOrg> => {
-    const selectedOrgs = filter(allOrgs, (item) =>
-      selectedArchitectureIds.includes(item.ORG_ID.toString())
-    );
-    const startPaths = isEmpty(selectedOrgs)
-      ? Object.keys(statisticalOrgsByPath)
-      : selectedOrgs.map((item) => item.T_PATH);
+    const startPaths = Object.keys(statisticalOrgsByPath);
 
     return {
       _or: startPaths.map((path) => {
@@ -246,12 +254,7 @@ function Example1() {
   const getFetchFlowsFilterQuery = (
     orgs: IFlowOrg[] | null
   ): Filter<IFlowStructureH> => {
-    const selectedArchitectures = filter(allFlows, (item) =>
-      selectedArchitectureIds.includes(item.FLOW_ID.toString())
-    );
-    const startPaths = isEmpty(selectedArchitectures)
-      ? Object.keys(statisticalFlowsByPath)
-      : selectedArchitectures.map((item) => item.T_PATH);
+    const startPaths = Object.keys(statisticalArchitecturesByPath);
 
     const result: Filter<IFlowStructureH> = {
       _and: [
@@ -335,16 +338,18 @@ function Example1() {
       const FlowStructureH = directus.items("jecn_flow_structure_h");
       const FlowOrg = directus.items("jecn_flow_org");
 
-      if (isEmpty(selectedOrgIds)) {
-        const flowsReponse = await FlowStructureH.readByQuery({
+      if (isEmpty(selectedOrgs)) {
+        const flowsResponse = await FlowStructureH.readByQuery({
           limit: -1,
           sort: ["SORT_ID"],
           filter: getFetchFlowsFilterQuery(null),
         });
-        const searchedFlows = flowsReponse.data as (IFlowStructureH & {
+        const searchedFlows = flowsResponse.data as (IFlowStructureH & {
           org?: IFlowOrg;
         })[];
-        const relatedOrgIds = uniq(searchedFlows?.map((item) => item.ORG_ID));
+        const relatedOrgIds = uniq(
+          searchedFlows?.map((item) => item.ORG_ID)
+        ).filter((item) => item !== null) as number[];
         const orgsResponse = await FlowOrg.readByQuery({
           limit: -1,
           sort: ["SORT_ID"],
@@ -368,15 +373,15 @@ function Example1() {
           sort: ["SORT_ID"],
           filter: getFetchOrgsFilterQuery(),
         });
+        const searchedOrgs = orgsResponse.data as IFlowOrg[];
         const flowsResponse = await FlowStructureH.readByQuery({
           limit: -1,
           sort: ["SORT_ID"],
-          filter: getFetchFlowsFilterQuery(orgsResponse.data as IFlowOrg[]),
+          filter: getFetchFlowsFilterQuery(searchedOrgs),
         });
         const searchedFlows = flowsResponse.data as (IFlowStructureH & {
           org?: IFlowOrg;
         })[];
-        const searchedOrgs = orgsResponse.data as IFlowOrg[];
         for (let i = 0, length = searchedFlows.length; i < length; i++) {
           const flow = searchedFlows[i];
           for (let j = 0, length = searchedOrgs.length; j < length; j++) {
@@ -399,31 +404,26 @@ function Example1() {
     console.log("orgPubDetails", orgPubDetails);
   };
 
-  const statisticalFlowsByPath = useMemo(() => {
+  const statisticalArchitecturesByPath = useMemo(() => {
     if (isNull(allFlows)) {
       return {};
     }
 
     const result: IKeyValue<IFlowStructure> = {};
-    if (isEmpty(selectedArchitectureIds)) {
-      for (let i = 0, length = allFlows.length; i < length; i++) {
-        const item = allFlows[i];
-        const isRootNode = item.PRE_FLOW_ID === 0;
-        if (isRootNode) {
-          result[item.T_PATH] = item;
-        }
-      }
-    } else {
-      for (let i = 0, length = allFlows.length; i < length; i++) {
-        const item = allFlows[i];
-        if (selectedArchitectureIds.includes(item.FLOW_ID.toString())) {
-          result[item.T_PATH] = item;
-        }
-      }
+    const statisticalArchitectures = isEmpty(selectedArchitectures)
+      ? allFlows.filter(
+          (flow) =>
+            flow.PRE_FLOW_ID === ROOT_NODE_ID &&
+            flow.ISFLOW === FlowType.architecture
+        )
+      : selectedArchitectures;
+    for (let i = 0, length = statisticalArchitectures.length; i < length; i++) {
+      const { T_PATH } = statisticalArchitectures[i];
+      result[T_PATH] = statisticalArchitectures[i];
     }
 
     return result;
-  }, [allFlows, selectedArchitectureIds]);
+  }, [allFlows, selectedArchitectures]);
 
   const statisticalOrgsByPath = useMemo(() => {
     if (isNull(allOrgs)) {
@@ -431,25 +431,16 @@ function Example1() {
     }
 
     const result: IKeyValue<IFlowOrg> = {};
-    if (isEmpty(selectedOrgIds)) {
-      for (let i = 0, length = allOrgs.length; i < length; i++) {
-        const item = allOrgs[i];
-        const isRootNode = item.PER_ORG_ID === 0;
-        if (isRootNode) {
-          result[item.T_PATH] = item;
-        }
-      }
-    } else {
-      for (let i = 0, length = allOrgs.length; i < length; i++) {
-        const item = allOrgs[i];
-        if (selectedOrgIds.includes(item.ORG_ID.toString())) {
-          result[item.T_PATH] = item;
-        }
-      }
+    const statisticalOrgs = isEmpty(selectedOrgs)
+      ? allOrgs.filter((item) => item.PER_ORG_ID === ROOT_NODE_ID)
+      : selectedOrgs;
+    for (let i = 0, length = statisticalOrgs.length; i < length; i++) {
+      const { T_PATH } = statisticalOrgs[i];
+      result[T_PATH] = statisticalOrgs[i];
     }
 
     return result;
-  }, [allOrgs, selectedOrgIds]);
+  }, [allOrgs, selectedOrgs]);
 
   const pubTimeLabelList = useMemo(() => {
     let startTime = dayjs(timeRange.startTime);
@@ -479,20 +470,23 @@ function Example1() {
       return [];
     }
 
-    const statisticalFlows = map(statisticalFlowsByPath, (item, path) => {
-      const { FLOW_ID, FLOW_NAME } = item;
-      return {
-        flowId: FLOW_ID,
-        flowName: FLOW_NAME,
-        flowsByPubTime: getFlowsByPubTime(),
-        path: path,
-      } as {
-        flowId: number;
-        flowName: string;
-        flowsByPubTime: IKeyValue<IFlowStructureH[]>;
-        path: string;
-      };
-    });
+    const statisticalFlows = map(
+      statisticalArchitecturesByPath,
+      (item, path) => {
+        const { FLOW_ID, FLOW_NAME } = item;
+        return {
+          flowId: FLOW_ID,
+          flowName: FLOW_NAME,
+          flowsByPubTime: getFlowsByPubTime(),
+          path: path,
+        } as {
+          flowId: number;
+          flowName: string;
+          flowsByPubTime: IKeyValue<IFlowStructureH[]>;
+          path: string;
+        };
+      }
+    );
     for (let i = 0, length = searchedFlows.length; i < length; i++) {
       const flow = searchedFlows[i];
       for (let j = 0, length = statisticalFlows.length; j < length; j++) {
