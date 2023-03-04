@@ -91,7 +91,7 @@ type IFlowColumn = {
   totalCount: number;
 };
 
-type IOrgColumn = {
+export type IOrgColumn = {
   orgId: number;
   orgName: string;
   pubTimeLabel: string;
@@ -108,13 +108,13 @@ const FlowType = {
   process: 1,
 };
 
-const ReleaseStatus = {
+export const ReleaseStatus = {
   add: 0,
   revise: 1,
   abolish: 2,
 };
 
-const ReleaseStatusMapLabel = {
+export const ReleaseStatusMapLabel: { [k: number]: string } = {
   0: "新增",
   1: "修订",
   2: "废止",
